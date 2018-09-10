@@ -52,8 +52,13 @@ __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_AT86RF233.git"
 #pylint: disable=bad-whitespace
 # Register and other constant values:
 _READ_REG        = const(0x80)
+_WRITE_REG       = const(0xC0)
 _REG_PART_NUM    = const(0x1C)
 _REG_VERSION_NUM = const(0x1D)
+_REG_SHORTADDR   = const(0x20)
+_REG_PANADDR     = const(0x22)
+_REG_IEEEADDR    = const(0x24)
+
 #pylint: enable=bad-whitespace
 
 class AT86RF233:
@@ -75,18 +80,61 @@ class AT86RF233:
             time.sleep(0.01)
             reset.value = True
         time.sleep(0.01)
-        part_num = self._read_reg(_REG_PART_NUM)
+        part_num = self._read_reg(_REG_PART_NUM)[0]
         if part_num != 0x0b:
             raise RuntimeError("Part #0x%x wrong" % part_num)
-        vers = self._read_reg(_REG_VERSION_NUM)
+        vers = self._read_reg(_REG_VERSION_NUM)[0]
         if vers != 2:
             raise RuntimeError("Version #%d wrong" % vers)
-        
 
-    def _read_reg(self, reg_addr):
+    @property
+    def short_addr(self):
+        i = self._read_reg(_REG_SHORTADDR, 2)
+        return i[0] << 8 | i[1]
+
+    @short_addr.setter
+    def short_addr(self, addr):
+        self._write_reg(_REG_SHORTADDR, bytes([addr >> 8, addr & 0xFF]))
+
+    @property
+    def pan_addr(self):
+        i = self._read_reg(_REG_PANADDR, 2)
+        return i[0] << 8 | i[1]
+
+    @pan_addr.setter
+    def pan_addr(self, addr):
+        self._write_reg(_REG_PANADDR, bytes([addr >> 8, addr & 0xFF]))
+
+    @property
+    def ieee_addr(self):
+        return self._read_reg(_REG_IEEEADDR, 6)
+
+    @ieee_addr.setter
+    def ieee_addr(self, addr):
+        if len(addr) != 6:
+            raise ValueError("IEEE address must be 6 bytes")
+        self._write_reg(_REG_IEEEADDR, addr)
+    
+    
+    def _write_reg(self, reg_addr, buf):
         # address is only 5 bits!
-        self._BUFFER[0] = _READ_REG | (reg_addr & 0x3F)
-        with self._spi as spi:
-            spi.write(self._BUFFER, end=1)
-            spi.readinto(self._BUFFER, end=1)
-        return self._BUFFER[0]
+        self._BUFFER[0] = _WRITE_REG | (reg_addr & 0x3F)
+        for i in buf:
+            self._BUFFER[1] = i
+            with self._spi as spi:
+                print("writing ", [hex (i) for i in self._BUFFER[0:2]])
+                spi.write(self._BUFFER, end=2)
+            self._BUFFER[0] += 1
+
+    def _read_reg(self, reg_addr, num=1):
+        # address is only 5 bits!
+        addr = bytearray(1)
+        for i in range(num):
+            # increment each byte
+            addr[0] = _READ_REG | (reg_addr+i & 0x3F)
+            with self._spi as spi:
+                spi.write(addr)
+                print("reading $%02x" % (addr[0] & 0x3F), end="")
+                spi.readinto(self._BUFFER, start=i, end=i+1)
+                print(" 0x%02X" % self._BUFFER[i])
+        return self._BUFFER[0:num]
