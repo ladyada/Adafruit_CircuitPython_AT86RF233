@@ -51,6 +51,7 @@ __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_AT86RF233.git"
 
 #pylint: disable=bad-whitespace
 # Register and other constant values:
+_READ_FRAME      = const(0x20)
 _READ_REG        = const(0x80)
 _WRITE_REG       = const(0xC0)
 _REG_PART_NUM    = const(0x1C)
@@ -58,7 +59,19 @@ _REG_VERSION_NUM = const(0x1D)
 _REG_SHORTADDR   = const(0x20)
 _REG_PANADDR     = const(0x22)
 _REG_IEEEADDR    = const(0x24)
+_REG_PHYCCCCA    = const(0x08)
 
+RTX_STATE = ('P_ON', 'BUSY_RX', 'BUSY_TX', 'FORCE_TRX_OFF', # 0 - 3
+             'FORCE_TX_ON', None, 'RX_ON', 'SUCCESS',       # 4 - 7
+             'TRX_OFF', 'TX_ON', None, None,                # 8 - 11
+             None, None, None, 'SLEEP',                     # 12 - 15
+             'PREP_DEEP_SLEEP', 'BUSY_RX_AACK', 'BUSY_TX_ARET', None, #16-19
+             None, None, 'RX_AACK_ON', None,                # 20 - 23
+             None, 'TX_ARET_ON', None, None,                # 24 - 27
+             'RX_ON_NOCLK', 'RX_AACK_ON_NOCLK',             # 28, 29
+             'BUSY_RX_AACK_NOCLK', 'TRANSITION')            # 30, 31
+            
+             
 #pylint: enable=bad-whitespace
 
 class AT86RF233:
@@ -67,7 +80,7 @@ class AT86RF233:
     # Class-level buffer for reading and writing data with the sensor.
     # This reduces memory allocations but means the code is not re-entrant or
     # thread safe!
-    _BUFFER = bytearray(32)
+    _BUFFER = bytearray(128)
 
     def __init__(self, spi, cs, *, sleep=None, reset=None):
         self._spi = spi_device.SPIDevice(spi, cs)
@@ -86,6 +99,22 @@ class AT86RF233:
         vers = self._read_reg(_REG_VERSION_NUM)[0]
         if vers != 2:
             raise RuntimeError("Version #%d wrong" % vers)
+
+    def read_frame(self):
+        with self._spi as spi:
+            self._BUFFER[0] = _READ_FRAME
+            spi.write_readinto(self._BUFFER, self._BUFFER, in_end=2, out_end=2)
+            num = self._BUFFER[1]
+            spi.write_readinto(self._BUFFER, self._BUFFER, in_end=num, out_end=num)
+        return self._BUFFER[0:num]
+    
+    @property
+    def status(self):
+        return self._read_reg(0x01)[0] & 0x1F
+
+    @property
+    def irq(self):
+        return self._read_reg(0x0F)[0]
 
     @property
     def short_addr(self):
@@ -111,10 +140,19 @@ class AT86RF233:
 
     @ieee_addr.setter
     def ieee_addr(self, addr):
-        if len(addr) != 6:
-            raise ValueError("IEEE address must be 6 bytes")
+        if len(addr) != 8:
+            raise ValueError("IEEE address must be 8 bytes")
         self._write_reg(_REG_IEEEADDR, addr)
-    
+
+    @property
+    def channel(self):
+        return self._read_reg(_REG_PHYCCCCA, 1)[0] & 0x1F
+
+    @channel.setter
+    def channel(self, chan):
+        if chan > 0x1A or chan < 0x0B:
+            raise ValueError("Invalid channel")
+        self._write_reg(_REG_PHYCCCCA, [chan])
     
     def _write_reg(self, reg_addr, buf):
         # address is only 5 bits!
@@ -122,7 +160,7 @@ class AT86RF233:
         for i in buf:
             self._BUFFER[1] = i
             with self._spi as spi:
-                print("writing ", [hex (i) for i in self._BUFFER[0:2]])
+                #print("writing ", [hex (i) for i in self._BUFFER[0:2]])
                 spi.write(self._BUFFER, end=2)
             self._BUFFER[0] += 1
 
@@ -134,7 +172,6 @@ class AT86RF233:
             addr[0] = _READ_REG | (reg_addr+i & 0x3F)
             with self._spi as spi:
                 spi.write(addr)
-                print("reading $%02x" % (addr[0] & 0x3F), end="")
                 spi.readinto(self._BUFFER, start=i, end=i+1)
-                print(" 0x%02X" % self._BUFFER[i])
+                #print("reading $%02x: 0x%02X" % (addr[0] & 0x3F, self._BUFFER[i]))
         return self._BUFFER[0:num]
